@@ -1,0 +1,141 @@
+%{
+    #include <stdio.h>
+    #include <iostream>
+    #include "hw3_output.hpp"
+    #include "type.h"
+    #include "bp.hpp"
+    #include "gen.h"
+    #include "src.h"
+
+    extern int yylineno;
+    extern int yylex();
+    extern TableStack tables;
+    extern Generator code_gen;
+    extern CodeBuffer buffer;
+    int yyerror(const char* message);
+
+    using namespace output;
+%}
+
+    %nonassoc VOID
+    %nonassoc INT
+    %nonassoc BYTE
+    %nonassoc B
+    %nonassoc BOOL
+    %nonassoc CONST
+    %nonassoc TRUE
+    %nonassoc FALSE
+    %nonassoc IF
+    %nonassoc RETURN
+    %nonassoc SHAKED
+    %nonassoc WHILE
+    %nonassoc BREAK
+    %nonassoc CONTINUE
+    %nonassoc SC
+    %nonassoc COMMA
+    %nonassoc COMMENT
+    %nonassoc ID
+    %nonassoc NUMBER
+    %nonassoc STRING
+    %nonassoc OVERRIDE
+
+    %right ASSIGN
+
+    %left OR
+    %left AND
+    %left RELOP
+    %left ADD_SUBTRACT
+    %right NOT
+    %left MULTIPLY_DIVIDE	
+    %left LPAREN RPAREN LBRACE RBRACE
+    %right ELSE
+
+
+%%
+Program: Funcs                                                      {$$ = new Program();}
+
+Funcs: /*epsilon*/                                                  {}
+       | FuncDecl Funcs                                             {}
+
+FuncDecl: OverRide RetType ID LPAREN Formals {$$ = new FuncDecl(dynamic_cast<RetType*>($2), $3, dynamic_cast<Formals*>($5), dynamic_cast<OverrideDecl*>($1));} RPAREN LBRACE  Statements RBRACE {tables.pop_scope();code_gen.close_function(dynamic_cast<RetType*>($2));}
+
+OverRide: /*epsilon*/                                               {$$ = new OverrideDecl(false);}
+          | OVERRIDE                                                {$$ = new OverrideDecl(true);}
+
+RetType: Type                                                       {$$ = new RetType(dynamic_cast<Type*>($1)->type);}
+         | VOID                                                     {$$ = new RetType("void");}
+
+Formals: /*epsilon*/                                                {$$ = new Formals();}
+         | FormalsList                                              {$$ = new Formals(dynamic_cast<FormalsList*>($1));}
+
+FormalsList: FormalDecl                                             {$$ = new FormalsList($1);}
+             | FormalDecl COMMA FormalsList                         {$$ = new FormalsList($1,dynamic_cast<FormalsList*>($3));}
+
+Statements: Statement                                               {$$ = new Statements(dynamic_cast<Statement*>($1));}
+            | Statements Statement                                  {$$ = new Statements(dynamic_cast<Statements*>($1), dynamic_cast<Statement*>($2));}
+
+FormalDecl:  Type ID                                                {$$ = new FormalDecl(dynamic_cast<Type*>($1), $2);}
+
+Statement: LBRACE {tables.push_scope(false, *(tables.current_scope()->return_type));} Statements {tables.pop_scope();} RBRACE    {$$ = new Statement(); dynamic_cast<Statement*>($$)->merge_lists_statements($3); delete $3;}
+           | Type ID SC                                             {$$ = new Statement(dynamic_cast<Type*>($1), $2);}
+           | Type ID ASSIGN Exp SC                                  {$$ = new Statement(dynamic_cast<Type*>($1), $2, dynamic_cast<Exp*>($4));}
+           | Call SC                                                {$$ = new Statement(dynamic_cast<Call*>($1));}
+           | ID ASSIGN Exp SC                                       {$$ = new Statement($1, dynamic_cast<Exp*>($3));}
+           | RETURN SC                                              {Exp* exp = new Exp(); exp->is_var = false;$$ = new Statement(exp, true);}
+           | RETURN Exp SC                                          {$$ = new Statement(dynamic_cast<Exp*>($2), true);}
+           | IF LPAREN CheckBool RPAREN OS Label Statement          {$$ = new Statement(dynamic_cast<Statement*>($7), dynamic_cast<Exp*>($3), dynamic_cast<Label*>($6));tables.pop_scope();}
+           | IF LPAREN CheckBool RPAREN OS Label Statement ELSE {code_gen.next_label_code(dynamic_cast<Exp*>($3));tables.pop_scope();} OS Label Statement  {$$ = new Statement(dynamic_cast<Statement*>($7), dynamic_cast<Statement*>($12), dynamic_cast<Exp*>($3), dynamic_cast<Label*>($6), dynamic_cast<Label*>($11)); tables.pop_scope();}
+           | WHILE LPAREN Label CheckBool RPAREN Label  {tables.push_scope(true, *(tables.current_scope()->return_type));} Statement                 {$$ = new Statement("WHILE", dynamic_cast<Exp*>($4), dynamic_cast<Label*>($3), dynamic_cast<Label*>($6), dynamic_cast<Statement*>($8)); tables.pop_scope();}
+           | CONTINUE SC                                               {$$ = new Statement($1);}
+           | BREAK SC                                            {$$ = new Statement($1);}
+
+Call: ID LPAREN ExpList RPAREN                                      {$$ = new Call($1, $3);}
+      | ID LPAREN RPAREN                                            {$$ = new Call($1);}
+
+
+ExpList: Exp                                                        {$$ = new ExpList(code_gen.bool_exp(dynamic_cast<Exp *>($1)));}
+         | Exp {$1 = code_gen.bool_exp(dynamic_cast<Exp *>($1));} COMMA ExpList    {$$ = $4;(dynamic_cast<ExpList *>($$)->expressions).insert((dynamic_cast<ExpList *>($$)->expressions).begin(), dynamic_cast<Exp*>($1));}
+
+Exp: LPAREN Exp RPAREN                                              {$$ = new Exp(dynamic_cast<Exp*>($2));}
+     | Exp ADD_SUBTRACT Exp                                              {$$ = new Exp($1, $3, $2->value, "int", "");}
+     | Exp MULTIPLY_DIVIDE Exp                                             {$$ = new Exp($1, $3, $2->value, "int", "");}
+     | ID                                                           {$$ = new Exp(true, $1);}
+     | Call                                                         {$$ = new Exp(false, $1);}
+     | NUMBER                                                          {$$ = new Exp($1, "int");}
+     | NUMBER B                                                        {$$ = new Exp($1, "byte");}
+     | TRUE                                                         {$$ = new Exp($1, "bool");}
+     | FALSE                                                        {$$ = new Exp($1, "bool");}
+     | STRING                                                       {$$ = new Exp($1, "string");}
+     | NOT Exp                                                      {$$ = new Exp($2, $2, $1->value, "bool", "");}
+     | Exp AND Label Exp                                            {$$ = new Exp($1, $4, $2->value, "bool", $3->value);}
+     | Exp OR Label Exp                                             {$$ = new Exp($1, $4, $2->value, "bool", $3->value);}
+     | Exp RELOP Exp                                                {$$ = new Exp($1, $3, $2->value, "relop", "");}
+     | LPAREN Type RPAREN Exp                                       {$$ = new Exp($4, $2);}
+
+Type: INT                                                           {$$ = new Type("int");}
+      | BOOL                                                        {$$ = new Type("bool");}
+      | BYTE                                                        {$$ = new Type("byte");}
+
+
+OS:                                                                 {tables.push_scope(false, *(tables.current_scope()->return_type));}
+CheckBool: Exp                                                      {check_bool($1);}
+Label:                                                              {$$ = new Label();}
+%%
+
+TableStack tables = TableStack();
+Generator code_gen = Generator();
+CodeBuffer buffer = CodeBuffer();
+
+int main(){
+        buffer.emit_init();
+        int res = yyparse();
+        tables.check_program();
+        buffer.printGlobalBuffer();
+        buffer.printCodeBuffer();
+        return res;
+}
+
+int yyerror(const char * message){
+	errorSyn(yylineno);
+	exit(0);
+}
